@@ -3,7 +3,7 @@
 
 Plugin para Unreal Engine 5 que integra o poder da OpenAI diretamente ao editor, permitindo análises, geração e manipulação de Blueprints, arquivos e lógica C++ com um assistente técnico especializado. Ideal para desenvolvedores que desejam acelerar seu fluxo de trabalho com IA.
 
-> 🚀 Desenvolvido por [SeuNomeAqui] — compatível com Unreal Engine 5.3+ (Editor Only)
+> 🚀 Desenvolvido por Morisakki — compatível com Unreal Engine 5.3+ (Editor Only)
 
 ---
 
@@ -48,11 +48,8 @@ Plugins/GPTAssistentPlugin/Config/DefaultGPTAssistentPlugin.ini
 Com o seguinte conteúdo:
 
 ```ini
-[GPT]
-ApiKey=sk-...
-AssistantId=asst_...
-DefaultModel=gpt-4o
-DefaultLang=pt-BR
+[GPTSettings]
+ApiKey=
 ```
 
 ---
@@ -64,9 +61,7 @@ DefaultLang=pt-BR
 | Comando                         | Descrição |
 |----------------------------------|-----------|
 | `gpt.send [mensagem]`           | Envia mensagem diretamente para o assistente |
-| `gpt.clearsession`              | Limpa o contexto atual da sessão |
-| `gpt.setmodel [modelo]`         | Altera o modelo ativo (ex: `gpt-4o`, `gpt-3.5-turbo`) |
-| `gpt.setlang [pt-BR|en-US]`     | Define a linguagem padrão das respostas |
+
 
 ---
 
@@ -85,11 +80,7 @@ DefaultLang=pt-BR
 | Comando                                         | Descrição |
 |------------------------------------------------|-----------|
 | `gpt.createblueprint { "blueprint": { ... } }` | Cria uma Blueprint completa com lógica interna baseada em JSON |
-| `gpt.movefile { "from": "...", "to": "..." }`  | Move arquivos (se o sistema de escrita estiver habilitado) |
-| `gpt.renamefile { "path": "...", "newname": "..." }` | Renomeia arquivos |
-| `gpt.createfolder { "path": "..." }`           | Cria nova pasta |
 
-> 🔒 Requer `writeEnable=true` no plugin para funções de escrita.
 
 ---
 
@@ -113,11 +104,7 @@ A IA utiliza documentos internos para:
 - Aprender com logs e arquivos de crash  
 - Evitar loops infinitos ou execuções perigosas  
 
-Adicione seus próprios documentos em:
 
-```
-GPTAssistentPlugin/Resources/FileSearch/
-```
 
 ---
 
