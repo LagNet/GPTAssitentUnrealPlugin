@@ -42,7 +42,7 @@ Abra seu projeto normalmente na Unreal Engine. O plugin será carregado automati
 Crie um arquivo `.ini` em:
 
 ```
-Plugins/GPTAssistentPlugin/Config/DefaultGPTAssistentPlugin.ini
+Plugins/GPTAssistentPlugin/GPTAssistentPluginConfig.ini
 ```
 
 Com o seguinte conteúdo:
