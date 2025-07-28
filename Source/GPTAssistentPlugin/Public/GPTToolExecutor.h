@@ -28,6 +28,7 @@ public:
 	 * @param ToolName Nome da ferramenta (ex: "readfile")
 	 * @param Arguments Parâmetros JSON passados pela IA
 	 * @return true se a execução for bem-sucedida
+	
 	 */
 	bool ExecuteTool(const FString& ToolName, const TSharedPtr<FJsonObject>& Arguments, FString& OutResult);
 
@@ -42,8 +43,16 @@ public:
 	bool AnalyzeSelectedBlueprintNodes(FString& OutResult);
     
 private:
+	
+	struct FChunkedMessage
+	{
+		TArray<FString> Chunks;
+		double LastAccessTime = 0.0;
+	};
+	
+	TMap<FString, FChunkedMessage> ChunkCache;
 
 	// Cache interno de resultados de arquivos
 	TMap<FString, FFileSearchCache> CachedFileResults;
-	
+	FString ServeChunkedOutput(const FString& UniqueKey, const FString& FullText, int32 RequestedChunk);
 };

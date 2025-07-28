@@ -85,6 +85,10 @@ bool UGPTToolExecutor::ExecuteTool(const FString& ToolName, const TSharedPtr<FJs
 
 bool UGPTToolExecutor::HandleReadFile(const TSharedPtr<FJsonObject>& Arguments, FString& OutResult)
 {
+    // Checa o chunk requisitado (padrão = 0)
+    int32 Chunk = 0;
+    Arguments->TryGetNumberField(TEXT("chunk"), Chunk);
+    
     FString VirtualPath;
     if (!Arguments->TryGetStringField("path", VirtualPath))
     {
@@ -129,21 +133,28 @@ bool UGPTToolExecutor::HandleReadFile(const TSharedPtr<FJsonObject>& Arguments, 
         OutResult = TEXT("❌ Falha ao ler o arquivo: ") + FilePath;
         return false;
     }
+    FString Key = FilePath; // Você pode melhorar com um hash ou adicionar modelo/language
 
-    OutResult = FileContent;
+    OutResult = ServeChunkedOutput(Key, FileContent, Chunk);
     return true;
 }
 
 bool UGPTToolExecutor::HandleListFiles(const TSharedPtr<FJsonObject>& Arguments, FString& OutResult)
 {
+    // Checa o chunk requisitado (padrão = 0)
+    int32 Chunk = 0;
+    Arguments->TryGetNumberField(TEXT("chunk"), Chunk);
+
     FString Directory;
     if (!Arguments->TryGetStringField("directory", Directory))
     {
-      Directory =  TEXT("");
-    }else{
-        // Extrai parâmetros
-    Directory = Arguments->GetStringField("directory");
+        Directory = TEXT("");
     }
+    else
+    {
+        Directory = Arguments->GetStringField("directory");
+    }
+
     FString Extension = Arguments->GetStringField("extension");
 
     FString NameFilter;
@@ -157,85 +168,82 @@ bool UGPTToolExecutor::HandleListFiles(const TSharedPtr<FJsonObject>& Arguments,
 
     bool bAutoFallback = false;
     Arguments->TryGetBoolField("auto_fallback", bAutoFallback);
-    
+
     const FString CacheKey = Directory + Extension + NameFilter + (bRecursive ? TEXT("_r") : TEXT("_n"));
     const double CurrentTime = FPlatformTime::Seconds();
 
- 
-    if (CachedFileResults.Contains(CacheKey) && (CurrentTime - CachedFileResults[CacheKey].LastUpdateTime) < 10.0)
+    // Se resultados já estão cacheados, usa direto
+    if (!CachedFileResults.Contains(CacheKey) || (CurrentTime - CachedFileResults[CacheKey].LastUpdateTime) >= 10.0)
     {
-        OutResult = FString::Join(CachedFileResults[CacheKey].ResultPaths, TEXT("\n"));
-        return true;
-    }
+        FString BasePath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+        FString CleanedDirectory = Directory.Replace(TEXT("\\"), TEXT("/"));
+        FString TargetFolder = BasePath / CleanedDirectory;
+        FPaths::CollapseRelativeDirectories(TargetFolder);
 
-  
-    FString BasePath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-    FString CleanedDirectory = Directory.Replace(TEXT("\\"), TEXT("/"));
-    FString TargetFolder = BasePath / CleanedDirectory;
-    FPaths::CollapseRelativeDirectories(TargetFolder);
-
-    if (!FPaths::DirectoryExists(TargetFolder))
-    {
-        if (!bAutoFallback)
+        if (!FPaths::DirectoryExists(TargetFolder))
         {
-            OutResult = TEXT("Diretório não encontrado: ") + TargetFolder;
+            if (!bAutoFallback)
+            {
+                OutResult = TEXT("Diretório não encontrado: ") + TargetFolder;
+                return false;
+            }
+
+            TArray<FString> AlternativeDirs = {
+                TEXT("/Game"), TEXT("/Plugins"), TEXT("/Source"), TEXT("/Saved")
+            };
+
+            for (const FString& AltDir : AlternativeDirs)
+            {
+                TSharedPtr<FJsonObject> AltArgs = MakeShareable(new FJsonObject(*Arguments));
+                AltArgs->SetStringField("directory", AltDir);
+                AltArgs->SetBoolField("auto_fallback", false);
+
+                FString AltResult;
+                if (HandleListFiles(AltArgs, AltResult))
+                {
+                    OutResult = AltResult;
+                    return true;
+                }
+            }
+
+            OutResult = TEXT("Diretório não encontrado nem via fallback: ") + Directory;
             return false;
         }
 
-   
-        TArray<FString> AlternativeDirs = {
-            TEXT("/Game"), TEXT("/Plugins"), TEXT("/Source"), TEXT("/Saved")
-        };
+        TArray<FString> FilePaths;
+        IFileManager& FileManager = IFileManager::Get();
 
-        for (const FString& AltDir : AlternativeDirs)
+        FString SearchPattern = bRecursive ? TEXT("**/*") : TEXT("*");
+        SearchPattern += Extension;
+
+        FileManager.FindFilesRecursive(FilePaths, *TargetFolder, *SearchPattern, true, !bIncludeFolders);
+
+        if (!NameFilter.IsEmpty())
         {
-            TSharedPtr<FJsonObject> AltArgs = MakeShareable(new FJsonObject(*Arguments));
-            AltArgs->SetStringField("directory", AltDir);
-            AltArgs->SetBoolField("auto_fallback", false);
-
-            FString AltResult;
-            if (HandleListFiles(AltArgs, AltResult))
+            FilePaths = FilePaths.FilterByPredicate([&](const FString& Path)
             {
-                OutResult = AltResult;
-                return true;
-            }
+                return Path.Contains(NameFilter, ESearchCase::IgnoreCase);
+            });
         }
 
-        OutResult = TEXT("Diretório não encontrado nem via fallback: ") + Directory;
-        return false;
-    }
-
-
-    TArray<FString> FilePaths;
-    IFileManager& FileManager = IFileManager::Get();
-
-    FString SearchPattern = bRecursive ? TEXT("**/*") : TEXT("*");
-    SearchPattern += Extension;
-
-    FileManager.FindFilesRecursive(FilePaths, *TargetFolder, *SearchPattern, true, !bIncludeFolders);
-
-    if (!NameFilter.IsEmpty())
-    {
-        FilePaths = FilePaths.FilterByPredicate([&](const FString& Path)
+        for (FString& Path : FilePaths)
         {
-            return Path.Contains(NameFilter, ESearchCase::IgnoreCase);
-        });
+            FPaths::MakePathRelativeTo(Path, *BasePath);
+            Path = TEXT("/") + Path.Replace(TEXT("\\"), TEXT("/"));
+        }
+
+        CachedFileResults.FindOrAdd(CacheKey) = { FilePaths, CurrentTime };
     }
 
- 
-    for (FString& Path : FilePaths)
-    {
-        FPaths::MakePathRelativeTo(Path, *BasePath);
-        Path = TEXT("/") + Path.Replace(TEXT("\\"), TEXT("/"));
-    }
+    // Junta o resultado em uma string longa para aplicar chunk
+    const TArray<FString>& FinalPaths = CachedFileResults[CacheKey].ResultPaths;
+    FString FullText = FString::Join(FinalPaths, TEXT("\n"));
 
+    // Gera resultado fracionado
+    OutResult = ServeChunkedOutput(CacheKey, FullText, Chunk);
 
-    CachedFileResults.FindOrAdd(CacheKey) = { FilePaths, CurrentTime };
-    OutResult = FString::Join(FilePaths, TEXT("\n"));
-
-
-    UE_LOG(LogTemp, Warning, TEXT("📁 [ListFiles] Diretório: %s | Ext: %s | Filtro: %s | Recursivo: %s | Resultados: %d"),
-        *Directory, *Extension, *NameFilter, bRecursive ? TEXT("Sim") : TEXT("Não"), FilePaths.Num());
+    UE_LOG(LogTemp, Warning, TEXT("📁 [ListFiles] Chunk %d | Diretório: %s | Ext: %s | Filtro: %s | Recursivo: %s | Resultados: %d"),
+        Chunk, *Directory, *Extension, *NameFilter, bRecursive ? TEXT("Sim") : TEXT("Não"), FinalPaths.Num());
 
     return true;
 }
@@ -248,7 +256,11 @@ bool UGPTToolExecutor::HandleExtractUAsset(const TSharedPtr<FJsonObject>& Argume
         OutResult = TEXT("Erro: Caminho do asset não fornecido.");
         return false;
     }
-    
+
+    // Checa o chunk requisitado (padrão = 0)
+    int32 Chunk = 0;
+    Arguments->TryGetNumberField(TEXT("chunk"), Chunk);
+
     FString VirtualPath = ConvertPhysicalPathToVirtual(RawPath);
     if (VirtualPath.IsEmpty())
     {
@@ -282,7 +294,6 @@ bool UGPTToolExecutor::HandleExtractUAsset(const TSharedPtr<FJsonObject>& Argume
             NodeJson->SetStringField(TEXT("Tooltip"), Node->GetTooltipText().ToString());
             NodeJson->SetStringField(TEXT("NodeName"), Node->GetName());
 
-         
             TArray<TSharedPtr<FJsonValue>> PinsArray;
             for (UEdGraphPin* Pin : Node->Pins)
             {
@@ -291,7 +302,6 @@ bool UGPTToolExecutor::HandleExtractUAsset(const TSharedPtr<FJsonObject>& Argume
                 PinJson->SetStringField(TEXT("Direction"), (Pin->Direction == EGPD_Input ? "Input" : "Output"));
                 PinJson->SetStringField(TEXT("DefaultValue"), Pin->DefaultValue);
 
-      
                 TArray<TSharedPtr<FJsonValue>> LinkedArray;
                 for (UEdGraphPin* Linked : Pin->LinkedTo)
                 {
@@ -312,7 +322,6 @@ bool UGPTToolExecutor::HandleExtractUAsset(const TSharedPtr<FJsonObject>& Argume
 
     Root->SetArrayField(TEXT("Graphs"), GraphsArray);
 
-
     TArray<TSharedPtr<FJsonValue>> VarsArray;
     for (FBPVariableDescription& Var : Blueprint->NewVariables)
     {
@@ -326,9 +335,19 @@ bool UGPTToolExecutor::HandleExtractUAsset(const TSharedPtr<FJsonObject>& Argume
 
     Root->SetArrayField(TEXT("Variables"), VarsArray);
 
+    FString FullJson;
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&FullJson);
+    if (!FJsonSerializer::Serialize(Root, Writer))
+    {
+        OutResult = TEXT("Erro ao serializar Blueprint para JSON.");
+        return false;
+    }
 
-    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutResult);
-    return FJsonSerializer::Serialize(Root, Writer);
+    // Gera cache de chunk e retorna a parte solicitada
+    FString UniqueKey = RawPath; // Pode adicionar extra (ex: assistantId) se quiser segmentar por sessão
+    OutResult = ServeChunkedOutput(UniqueKey, FullJson, Chunk);
+
+    return true;
 }
 
 FString UGPTToolExecutor::ConvertPhysicalPathToVirtual(const FString& PhysicalPath)
@@ -384,6 +403,11 @@ bool UGPTToolExecutor::ExportBlueprintToT3D(const TSharedPtr<FJsonObject>& Asset
         OutResult = TEXT("Erro: Caminho do asset não fornecido.");
         return false;
     }
+
+    // Checa o chunk requisitado (padrão = 0)
+    int32 Chunk = 0;
+    AssetPath->TryGetNumberField(TEXT("chunk"), Chunk);
+
     FString VirtualPath = ConvertPhysicalPathToVirtual(RawPath);
     if (VirtualPath.IsEmpty())
     {
@@ -398,7 +422,6 @@ bool UGPTToolExecutor::ExportBlueprintToT3D(const TSharedPtr<FJsonObject>& Asset
         return false;
     }
 
-   
     UExporter* Exporter = UExporter::FindExporter(Asset, TEXT("t3d"));
     if (!Exporter)
     {
@@ -406,18 +429,16 @@ bool UGPTToolExecutor::ExportBlueprintToT3D(const TSharedPtr<FJsonObject>& Asset
         return false;
     }
 
-   
     Exporter->SetFlags(RF_Transient);
     FStringOutputDevice OutputDevice;
     FExportObjectInnerContext Context;
     Exporter->ExportToOutputDevice(&Context, Asset, nullptr, OutputDevice, TEXT("t3d"), 0, 0, false, nullptr);
 
-   
-    FString FileName = FPaths::ProjectSavedDir() / "BlueprintExports" / (Asset->GetName() + TEXT(".t3d"));
-    IFileManager::Get().MakeDirectory(*FPaths::GetPath(FileName), true);
+    FString ExportedText = OutputDevice;
 
-    
-    OutResult = OutputDevice; 
+    // Fragmenta a saída e retorna o chunk correspondente
+    OutResult = ServeChunkedOutput(RawPath, ExportedText, Chunk);
+
     return true;
 }
 
@@ -577,6 +598,40 @@ bool UGPTToolExecutor::AnalyzeSelectedBlueprintNodes(FString& OutResult)
     return true;
 }
 
+FString UGPTToolExecutor::ServeChunkedOutput(const FString& UniqueKey, const FString& FullText, int32 RequestedChunk)
+{
+	const int32 MaxChunkSize = 3000;
+
+	// Se já estiver cacheado, usa
+	if (!ChunkCache.Contains(UniqueKey))
+	{
+		TArray<FString> Chunks;
+		FString Remaining = FullText;
+
+		while (!Remaining.IsEmpty())
+		{
+			int32 Size = FMath::Min(MaxChunkSize, Remaining.Len());
+			Chunks.Add(Remaining.Left(Size));
+			Remaining.RightChopInline(Size);
+		}
+
+		if (Chunks.Num() == 0)
+			Chunks.Add(TEXT("[Mensagem vazia]"));
+
+		FChunkedMessage Data;
+		Data.Chunks = Chunks;
+		Data.LastAccessTime = FPlatformTime::Seconds();
+		ChunkCache.Add(UniqueKey, Data);
+	}
+
+	const FChunkedMessage& Stored = ChunkCache[UniqueKey];
+	if (!Stored.Chunks.IsValidIndex(RequestedChunk))
+	{
+		return FString::Printf(TEXT("[Erro] Chunk %d/%d inexistente."), RequestedChunk + 1, Stored.Chunks.Num());
+	}
+
+	return FString::Printf(TEXT("[Parte %d/%d]\n%s"), RequestedChunk + 1, Stored.Chunks.Num(), *Stored.Chunks[RequestedChunk]);
+}
 
 
 
